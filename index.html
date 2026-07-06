@@ -240,7 +240,7 @@
     <div class="handle" id="h2"></div>
     <div class="handle" id="h3"></div>
   </div>
-  <div class="edit-foot">Arrastra los 4 puntos hacia las orillas del documento</div>
+  <div class="edit-foot">Los bordes se detectan automáticamente. Ajusta los puntos si es necesario.</div>
 </section>
 
 <!-- ========== PANTALLA: REVISIÓN + FILTROS ========== -->
@@ -384,18 +384,37 @@ $('shutterBtn').addEventListener('click',function(){
 $('uploadBtn').addEventListener('click',function(){ $('fileInput').click(); });
 $('fileInput').addEventListener('change',function(e){
   var f=e.target.files[0]; if(!f) return;
+  if(f.type && f.type.indexOf('image')!==0){ toast('Ese archivo no es una imagen'); e.target.value=''; return; }
+  loader(true,'Abriendo imagen…');
   var r=new FileReader();
   r.onload=function(){ loadCaptured(r.result); };
+  r.onerror=function(){ loader(false); toast('No se pudo leer el archivo. Prueba con otra imagen.'); };
   r.readAsDataURL(f);
   e.target.value='';
 });
 
+// Reduce fotos muy grandes para que no fallen por memoria
+function downscaleIfHuge(img){
+  var maxSrc=2600, w=img.width, h=img.height;
+  if(Math.max(w,h)<=maxSrc) return img;
+  var s=maxSrc/Math.max(w,h);
+  var c=document.createElement('canvas');
+  c.width=Math.round(w*s); c.height=Math.round(h*s);
+  c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+  return c;
+}
+
 function loadCaptured(dataURL){
   var img=new Image();
   img.onload=function(){
-    capturedImg=img;
+    loader(false);
+    capturedImg=downscaleIfHuge(img);
     show('edit');
     requestAnimationFrame(function(){ requestAnimationFrame(setupCrop); });
+  };
+  img.onerror=function(){
+    loader(false);
+    toast('No se pudo abrir esa imagen. Prueba con otra o toma la foto directamente.');
   };
   img.src=dataURL;
 }
@@ -419,10 +438,86 @@ function setupCrop(){
   cv.getContext('2d').drawImage(capturedImg,0,0,cropCanvasW,cropCanvasH);
   $('cropSvg').style.left=cv.style.left; $('cropSvg').style.top=cv.style.top;
   $('cropSvg').setAttribute('width',cropCanvasW); $('cropSvg').setAttribute('height',cropCanvasH);
-  // Esquinas iniciales con margen del 7%
-  var mx=cropCanvasW*0.07, my=cropCanvasH*0.07;
-  cropPts=[[mx,my],[cropCanvasW-mx,my],[cropCanvasW-mx,cropCanvasH-my],[mx,cropCanvasH-my]];
+  // Detectar automáticamente las orillas del documento
+  var auto=autoDetectCorners(capturedImg);
+  if(auto){
+    cropPts=auto.map(function(p){
+      return [ Math.max(0,Math.min(cropCanvasW,p[0]*cropScale)),
+               Math.max(0,Math.min(cropCanvasH,p[1]*cropScale)) ];
+    });
+  } else {
+    var mx=cropCanvasW*0.07, my=cropCanvasH*0.07;
+    cropPts=[[mx,my],[cropCanvasW-mx,my],[cropCanvasW-mx,cropCanvasH-my],[mx,cropCanvasH-my]];
+  }
   drawCropOverlay();
+}
+
+// ---- Detección automática de las 4 esquinas del documento ----
+function autoDetectCorners(img){
+  try{
+    var W=380, sc=W/img.width, H=Math.round(img.height*sc);
+    if(H<40||W<40) return null;
+    var c=document.createElement('canvas'); c.width=W; c.height=H;
+    var ctx=c.getContext('2d'); ctx.drawImage(img,0,0,W,H);
+    var d=ctx.getImageData(0,0,W,H).data;
+    var N=W*H, gray=new Float32Array(N);
+    for(var i=0,p=0;i<N;i++,p+=4) gray[i]=0.299*d[p]+0.587*d[p+1]+0.114*d[p+2];
+    // umbral de Otsu
+    var th=otsuGray(gray,N);
+    // ¿el documento es la zona clara u oscura? se decide por el centro
+    var cx0=(W*0.35)|0, cx1=(W*0.65)|0, cy0=(H*0.35)|0, cy1=(H*0.65)|0;
+    var above=0, below=0;
+    for(var y=cy0;y<cy1;y++) for(var x=cx0;x<cx1;x++){ if(gray[y*W+x]>=th) above++; else below++; }
+    var docBright = above>=below;
+    // máscara del documento
+    var mask=new Uint8Array(N);
+    for(var k=0;k<N;k++){ mask[k]=((gray[k]>=th)===docBright)?1:0; }
+    // componente conectado más grande (relleno por inundación)
+    var label=new Int32Array(N), best=0, bestCount=0, cur=0, stack=[];
+    for(var s=0;s<N;s++){
+      if(mask[s]===1 && label[s]===0){
+        cur++; var count=0; stack.length=0; stack.push(s); label[s]=cur;
+        while(stack.length){
+          var idx=stack.pop(); count++;
+          var xx=idx%W, yy=(idx/W)|0, n;
+          if(xx>0){n=idx-1; if(mask[n]&&!label[n]){label[n]=cur;stack.push(n);}}
+          if(xx<W-1){n=idx+1; if(mask[n]&&!label[n]){label[n]=cur;stack.push(n);}}
+          if(yy>0){n=idx-W; if(mask[n]&&!label[n]){label[n]=cur;stack.push(n);}}
+          if(yy<H-1){n=idx+W; if(mask[n]&&!label[n]){label[n]=cur;stack.push(n);}}
+        }
+        if(count>bestCount){bestCount=count;best=cur;}
+      }
+    }
+    // si la zona detectada es muy pequeña o llena toda la imagen, no es fiable
+    if(bestCount < N*0.12 || bestCount > N*0.985) return null;
+    // 4 esquinas por sumas/diferencias extremas
+    var tl,tr,br,bl, minSum=1e9,maxSum=-1e9,minDiff=1e9,maxDiff=-1e9;
+    for(var yy2=0;yy2<H;yy2++) for(var xx2=0;xx2<W;xx2++){
+      if(label[yy2*W+xx2]!==best) continue;
+      var sum=xx2+yy2, diff=xx2-yy2;
+      if(sum<minSum){minSum=sum;tl=[xx2,yy2];}
+      if(sum>maxSum){maxSum=sum;br=[xx2,yy2];}
+      if(diff>maxDiff){maxDiff=diff;tr=[xx2,yy2];}
+      if(diff<minDiff){minDiff=diff;bl=[xx2,yy2];}
+    }
+    if(!tl||!tr||!br||!bl) return null;
+    var inv=1/sc;
+    return [ [tl[0]*inv,tl[1]*inv],[tr[0]*inv,tr[1]*inv],[br[0]*inv,br[1]*inv],[bl[0]*inv,bl[1]*inv] ];
+  }catch(e){ return null; }
+}
+function otsuGray(gray,N){
+  var hist=new Array(256).fill(0);
+  for(var i=0;i<N;i++) hist[gray[i]|0]++;
+  var sum=0; for(var t=0;t<256;t++) sum+=t*hist[t];
+  var sumB=0,wB=0,max=0,thr=127;
+  for(var tt=0;tt<256;tt++){
+    wB+=hist[tt]; if(wB===0) continue;
+    var wF=N-wB; if(wF===0) break;
+    sumB+=tt*hist[tt];
+    var mB=sumB/wB, mF=(sum-sumB)/wF, between=wB*wF*(mB-mF)*(mB-mF);
+    if(between>max){max=between;thr=tt;}
+  }
+  return thr;
 }
 
 function drawCropOverlay(){
