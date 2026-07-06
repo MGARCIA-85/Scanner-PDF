@@ -394,8 +394,8 @@ function loadCaptured(dataURL){
   var img=new Image();
   img.onload=function(){
     capturedImg=img;
-    setupCrop();
     show('edit');
+    requestAnimationFrame(function(){ requestAnimationFrame(setupCrop); });
   };
   img.src=dataURL;
 }
@@ -406,6 +406,7 @@ var dragIdx=-1, cropScale=1, cropCanvasW=0, cropCanvasH=0;
 function setupCrop(){
   var area=$('cropArea');
   var aw=area.clientWidth, ah=area.clientHeight;
+  if(!aw || !ah){ requestAnimationFrame(setupCrop); return; }
   var iw=capturedImg.width, ih=capturedImg.height;
   cropScale=Math.min(aw/iw, ah/ih);
   cropCanvasW=Math.round(iw*cropScale);
@@ -454,12 +455,17 @@ $('cropCancel').addEventListener('click',function(){ show('cam'); });
 $('cropDone').addEventListener('click',function(){
   loader(true,'Enderezando…');
   setTimeout(function(){
-    warpedCanvas=warpPerspective();
-    currentFilter='auto'; currentRotation=0;
-    setActiveChip('auto');
-    renderPreview();
-    loader(false);
-    show('review');
+    try{
+      warpedCanvas=warpPerspective();
+      currentFilter='auto'; currentRotation=0;
+      setActiveChip('auto');
+      renderPreview();
+      loader(false);
+      show('review');
+    }catch(err){
+      loader(false);
+      toast('No se pudo procesar la imagen, intenta de nuevo');
+    }
   },30);
 });
 
