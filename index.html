@@ -384,12 +384,8 @@ $('shutterBtn').addEventListener('click',function(){
 $('uploadBtn').addEventListener('click',function(){ $('fileInput').click(); });
 $('fileInput').addEventListener('change',function(e){
   var f=e.target.files[0]; if(!f) return;
-  if(f.type && f.type.indexOf('image')!==0){ toast('Ese archivo no es una imagen'); e.target.value=''; return; }
   loader(true,'Abriendo imagen…');
-  var r=new FileReader();
-  r.onload=function(){ loadCaptured(r.result); };
-  r.onerror=function(){ loader(false); toast('No se pudo leer el archivo. Prueba con otra imagen.'); };
-  r.readAsDataURL(f);
+  openImageFile(f);
   e.target.value='';
 });
 
@@ -404,18 +400,37 @@ function downscaleIfHuge(img){
   return c;
 }
 
+// Paso común: pasar la imagen lista a la pantalla de recorte
+function proceedToCrop(source){
+  loader(false);
+  capturedImg=downscaleIfHuge(source);
+  show('edit');
+  requestAnimationFrame(function(){ requestAnimationFrame(setupCrop); });
+}
+
+// Abrir imagen de galería (método robusto para fotos grandes)
+function openImageFile(f){
+  var url=URL.createObjectURL(f);
+  var img=new Image();
+  img.onload=function(){ URL.revokeObjectURL(url); proceedToCrop(img); };
+  img.onerror=function(){
+    URL.revokeObjectURL(url);
+    loader(false);
+    var name=(f.name||'').toLowerCase(), type=f.type||'';
+    if(/\.(heic|heif)$/.test(name) || /heic|heif/.test(type)){
+      toast('Esa foto está en formato HEIC. Cambia la cámara del teléfono a "JPG", o toma la foto con la app.');
+    } else {
+      toast('No se pudo abrir esa imagen. Toma la foto con la cámara de la app.');
+    }
+  };
+  img.src=url;
+}
+
+// Foto tomada con la cámara de la app (llega como data URL desde el canvas)
 function loadCaptured(dataURL){
   var img=new Image();
-  img.onload=function(){
-    loader(false);
-    capturedImg=downscaleIfHuge(img);
-    show('edit');
-    requestAnimationFrame(function(){ requestAnimationFrame(setupCrop); });
-  };
-  img.onerror=function(){
-    loader(false);
-    toast('No se pudo abrir esa imagen. Prueba con otra o toma la foto directamente.');
-  };
+  img.onload=function(){ proceedToCrop(img); };
+  img.onerror=function(){ loader(false); toast('No se pudo procesar la foto. Intenta de nuevo.'); };
   img.src=dataURL;
 }
 
