@@ -410,20 +410,68 @@ function proceedToCrop(source){
 
 // Abrir imagen de galería (método robusto para fotos grandes)
 function openImageFile(f){
+  var name=(f.name||'').toLowerCase(), type=(f.type||'').toLowerCase();
+  var isHeic = /\.(heic|heif)$/.test(name) || /heic|heif/.test(type);
+  if(isHeic){ convertHeic(f); return; }
   var url=URL.createObjectURL(f);
   var img=new Image();
   img.onload=function(){ URL.revokeObjectURL(url); proceedToCrop(img); };
   img.onerror=function(){
     URL.revokeObjectURL(url);
-    loader(false);
-    var name=(f.name||'').toLowerCase(), type=f.type||'';
-    if(/\.(heic|heif)$/.test(name) || /heic|heif/.test(type)){
-      toast('Esa foto está en formato HEIC. Cambia la cámara del teléfono a "JPG", o toma la foto con la app.');
-    } else {
-      toast('No se pudo abrir esa imagen. Toma la foto con la cámara de la app.');
-    }
+    // Puede ser HEIC sin extensión clara: intentar convertir
+    convertHeic(f);
   };
   img.src=url;
+}
+
+// ---- Conversión de fotos HEIC (formato de iPhone / alta eficiencia) ----
+var heicLibState=0; // 0=sin cargar, 1=cargando, 2=ok, 3=falló
+var heicWaiters=[];
+function ensureHeicLib(cb){
+  if(heicLibState===2 && window.heic2any) return cb(true);
+  if(heicLibState===3) return cb(false);
+  heicWaiters.push(cb);
+  if(heicLibState===1) return;
+  heicLibState=1;
+  var sources=[
+    'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/heic2any/0.0.1/index.min.js'
+  ];
+  function tryLoad(i){
+    if(i>=sources.length){ finish(false); return; }
+    var s=document.createElement('script');
+    s.src=sources[i];
+    s.onload=function(){ window.heic2any ? finish(true) : tryLoad(i+1); };
+    s.onerror=function(){ tryLoad(i+1); };
+    document.head.appendChild(s);
+  }
+  function finish(ok){
+    heicLibState = ok?2:3;
+    var w=heicWaiters; heicWaiters=[];
+    w.forEach(function(fn){ fn(ok); });
+  }
+  tryLoad(0);
+}
+function convertHeic(f){
+  loader(true,'Convirtiendo foto…');
+  ensureHeicLib(function(ok){
+    if(!ok || !window.heic2any){
+      loader(false);
+      toast('No se pudo convertir la foto HEIC (sin conexión). Cambia la cámara a "JPG" o toma la foto con la app.');
+      return;
+    }
+    window.heic2any({ blob:f, toType:'image/jpeg', quality:0.9 }).then(function(out){
+      var blob = Array.isArray(out) ? out[0] : out;
+      var url=URL.createObjectURL(blob);
+      var img=new Image();
+      img.onload=function(){ URL.revokeObjectURL(url); proceedToCrop(img); };
+      img.onerror=function(){ URL.revokeObjectURL(url); loader(false); toast('No se pudo abrir la foto convertida.'); };
+      img.src=url;
+    }).catch(function(){
+      loader(false);
+      toast('No se pudo convertir esa foto. Toma la foto con la cámara de la app.');
+    });
+  });
 }
 
 // Foto tomada con la cámara de la app (llega como data URL desde el canvas)
